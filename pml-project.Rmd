@@ -1,0 +1,140 @@
+---
+title: "Weight Lifting Exercises: Controlling the Quality of Execution"
+author: "Liubov Gryaznova"
+date: "February 21, 2016"
+output: html_document
+---
+
+## Overview
+
+This is a project for the [Practical Machine Learning](https://www.coursera.org/learn/practical-machine-learning/) course (part of Data Science Specialization) at [Coursera](https://www.coursera.org/).
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. One thing that people regularly do is quantify *how much* of a particular activity they do, but they rarely quantify *how well* they do it. In this project, we will use data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset). The goal of the project is to predict the manner in which they did the exercise.
+
+### Data
+
+The training data for this project are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+The test data are available here: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+## Exploratory Data Analysis
+
+First we load the training dataset and look at its structure to define further strategy. We convert data into appropriate types (most columns contain numeric values and our target variable `classe` is a factor variable).
+
+```{r download, cache=TRUE, warning=FALSE}
+## download files if necessary
+if(!all(file.exists("pml-training.csv", "pml-testing.csv"))) {
+    URL1 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    URL2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+    download.file(URL1, destfile = "pml-training.csv", 
+                  method = "internal", mode = "wb")
+    download.file(URL2, destfile = "pml-testing.csv", 
+                  method = "internal", mode = "wb")
+    rm(URL1, URL2)
+}
+## read the training data (all as characters)
+training <- read.csv("pml-training.csv", 
+                     colClasses = "character", row.names = "X")
+
+## convert to numeric and factor
+for (i in 6:158) {
+    training[, i] <- as.numeric(training[, i])
+}
+training$classe <- as.factor(training$classe)
+```
+
+The data frame `training` consists of `r dim(training)[1]` records across `r dim(training)[2]` variables. First six columns (`user_name`, `raw_timestamp_part_1`, `raw_timestamp_part_2`, `cvtd_timestamp`, `new_window`, and `num_window`) are not needed for our prediction model. Also if we look at the summary of the dataset we see that a lot of variables (average values, standard deviations, and other calculations) contain NAs for most of the values. So we omit such columns as well.
+
+```{r trunkdata, cache=TRUE}
+## calculate number of NAs in each column
+sapply(1:dim(training)[2], function(x) {sum(is.na(training[, x]))})
+
+## omit columns with NAs
+full <- sapply(1:dim(training)[2], 
+               function(x) {sum(is.na(training[, x])) == 0})
+training <- training[, full]
+
+## omit unnecessary variables
+training <- training[, -(1:6)]
+```
+
+Now our `training` dataset contains only `r dim(training)[2]` columns. Next we check if some of the variables have zero or near zero variance, so they will not be helpful for our models. We use `nearZeroVar` function from the **caret** package to make sure that all the predictors in our dataset are suitable for analysis (output is hidden to save length).
+
+```{r checkvar, cache=TRUE, message=FALSE, results='hide'}
+## check variance
+library(caret); nearZeroVar(training, saveMetrics = TRUE)
+```
+
+## Building Models
+
+We slice our training dataset into three partitions where 60% of data is used to train our models, 20% forms a testing dataset to compare models and 20% is left for validation after we choose a model.
+
+```{r partitions, cache=TRUE}
+## create partitions
+set.seed(111)
+tt <- createDataPartition(training$classe, p = 0.8, list = FALSE)
+trtest <- training[tt, ]          # union of training and testing sets
+validation <- training[-tt, ]     # validation set (20)
+inTrain <- createDataPartition(trtest$classe, p = 0.75, list = FALSE)
+mytrain <- trtest[inTrain, ]      # training set (0.75*0.8 = 0.6)
+mytest <- trtest[-inTrain, ]      # testing set (0.25*0.8 = 0.2)
+rm(trtest)
+```
+
+First we train our model with a **classification tree** method but the resulting accuracy is extremely low, so we proceed to another method.
+
+```{r rpart, cache=TRUE, message=FALSE}
+mod1 <- train(classe ~ ., data = mytrain, method = "rpart")
+confusionMatrix(mytest$classe, predict(mod1, mytest))$overall['Accuracy']
+confusionMatrix(mytest$classe, predict(mod1, mytest))$table
+
+```
+
+Our next choice is to use **random forests** method. The model consumes far more computational time but produces an excellent result.
+
+```{r rf, cache=TRUE, message=FALSE}
+mod2 <- train(classe ~ ., data = mytrain, method = "rf")
+confusionMatrix(mytest$classe, predict(mod2, mytest))
+```
+
+The accuracy for our testing set sliced from the training set is `r library(caret);round(confusionMatrix(mytest$classe, predict(mod2, mytest))$overall['Accuracy'], 4) * 100`%. The expected out-of-sample error rate is `r library(caret);(1 - round(confusionMatrix(mytest$classe, predict(mod2, mytest))$overall['Accuracy'], 4)) * 100`%.
+
+Though the result is impressive, we also introduce **5-fold cross validation** to tune the **random forests** model.
+
+```{r rftrc, cache=TRUE, message=FALSE}
+mod3 <- train(classe ~ ., data = mytrain, method = "rf", 
+              trControl=trainControl(method = "cv", number = 5))
+confusionMatrix(mytest$classe, predict(mod3, mytest))
+```
+
+The third model appears to be even more accurate (`r library(caret);round(confusionMatrix(mytest$classe, predict(mod3, mytest))$overall['Accuracy'], 4) * 100`%) and demonstrates the expected out-of-sample error rate of `r library(caret);(1 - round(confusionMatrix(mytest$classe, predict(mod3, mytest))$overall['Accuracy'], 4)) * 100`%. However, since random forests models can suffer from overfitting, we double-check both `rf` models against the validation data set before applying to the real testing data.
+
+```{r validate, cache=TRUE, message=FALSE}
+confusionMatrix(validation$classe, predict(mod2, mytest))
+confusionMatrix(validation$classe, predict(mod3, mytest))
+```
+
+We get the same accuracy and error rates with the validation dataset as we observed with our testing subset. Both models are highly predictive with a slight increase in accuracy when introducing 5-fold cross validation. Therefore we try each of them to predict values for the testing dataset given in the assignment.
+
+## Predicting Values for the Testing Data
+
+We load the testing dataset and process it in the manner we did it with the training dataset (convert variables and omit unnecessary columns). The only difference is that the testing data have no `classe` variable since this is our task to predict it, but it has `problem_id` column instead which is not present in our models, so we remove it as well. Then we use our two random forests models (`mod2` with default settings and `mod3` with 5-fold cross validation) to predict classes for 20 records of the given test dataset.
+
+```{r testing, cache=TRUE, warning=FALSE, message=FALSE}
+## read and process the testing data
+testing <- read.csv("pml-testing.csv", 
+                     colClasses = "character", row.names = "X")
+for (i in 6:158) {
+    testing[, i] <- as.numeric(testing[, i])
+}
+testing <- testing[, full]
+testing <- testing[, -c(1:6,dim(testing)[2])]
+
+## predict for the quiz (real test set)
+predict(mod2, testing); predict(mod3, testing)
+
+## are predictions the same?
+all.equal(predict(mod2, testing), predict(mod3, testing))
+```
+
+Both models predict the same values which appear to be 100% correct according to the quiz.
